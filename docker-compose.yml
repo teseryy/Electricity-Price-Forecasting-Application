@@ -1,0 +1,159 @@
+services:
+
+  redis:
+    image: redis:7.2
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  clickhouse:
+    build:
+      context: ./infra/clickhouse/
+      dockerfile: Dockerfile
+    environment:
+      - CLICKHOUSE_USER=myuser
+      - CLICKHOUSE_PASSWORD=mypassword
+    ports:
+      - "9090:9090"
+      - '8123:8123'
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8123/ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  kafka:
+    build:
+      context: ./infra/kafka/
+      dockerfile: Dockerfile
+    ports:
+      - '9092:9092'
+      - '9094:9094'
+    environment:
+      - KAFKA_CFG_NODE_ID=0
+      - KAFKA_CFG_CONTROLLER_BROKER_ID=0
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "kafka-topics.sh", "--bootstrap-server", "localhost:9092", "--list" ]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  kafka-ui:
+    image: 'provectuslabs/kafka-ui:latest'
+    ports:
+      - '8888:8080'
+    depends_on:
+      kafka:
+          condition: service_healthy
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=local
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+    networks:
+      - app-network
+
+
+  fastapi:
+    build:
+      context: ./PS/
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8010"
+    networks:
+      - app-network
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  faststream:
+    build:
+      context: ./DCS/
+      dockerfile: Dockerfile
+    networks:
+      - app-network
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  ui:
+    build:
+      context: ./UI/electricity-forecasting/
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - API_URL=http://fastapi:8010
+    networks:
+      - app-network
+    depends_on:
+      fastapi:
+        condition: service_started
+    restart: unless-stopped
+
+  airflow:
+    build:
+      context: ./infra/airflow
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8080"
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:////opt/airflow/airflow.db
+      - AIRFLOW__CORE__FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=False
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth
+      - AIRFLOW__CONNECTIONS__KAFKA_DEFAULT=kafka://kafka:9092
+    volumes:
+      - ./infra/airflow/dags:/opt/airflow/dags
+      - airflow-data:/opt/airflow
+    networks:
+      - app-network
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "--fail", "http://localhost:8080/health" ]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  redis-data:
+  clickhouse-data:
+  airflow-data:
+
+networks:
+  app-network:
+    driver: bridge

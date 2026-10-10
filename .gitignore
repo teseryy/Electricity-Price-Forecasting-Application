@@ -1,0 +1,27 @@
+# Operating-system metadata
+.DS_Store
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Frontend dependencies and generated output
+node_modules/
+.next/
+out/
+build/
+dist/
+
+# Documentation builds
+**/docs/_build/
+
+# Local environment and tooling files
+.env
+.env.*
+.idea/workspace.xml
+.idea/shelf/
